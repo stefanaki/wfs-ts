@@ -1,0 +1,9 @@
+<wfs:LockFeatureResponse xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc">
+  <wfs:LockId>GeoServer</wfs:LockId>
+  <wfs:FeaturesLocked>
+    <ogc:FeatureId fid="world_cities.4"/>
+  </wfs:FeaturesLocked>
+  <wfs:FeaturesNotLocked>
+    <ogc:FeatureId fid="world_cities.2"/>
+  </wfs:FeaturesNotLocked>
+</wfs:LockFeatureResponse>

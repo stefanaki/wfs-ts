@@ -1,0 +1,53 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: geodata
+      POSTGRES_USER: geoserver
+      POSTGRES_PASSWORD: geoserver
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geoserver -d geodata"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - ./postgis/initdb:/docker-entrypoint-initdb.d:ro
+
+  geoserver:
+    image: docker.osgeo.org/geoserver:2.26.2
+    depends_on:
+      postgis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      GEOSERVER_ADMIN_USER: admin
+      GEOSERVER_ADMIN_PASSWORD: geoserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u \"$$GEOSERVER_ADMIN_USER:$$GEOSERVER_ADMIN_PASSWORD\" http://localhost:8080/geoserver/rest/about/version.xml >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  geoserver-setup:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      geoserver:
+        condition: service_healthy
+    volumes:
+      - ./geoserver/configure-geoserver.sh:/opt/setup/configure-geoserver.sh:ro
+    entrypoint: ["/bin/sh", "/opt/setup/configure-geoserver.sh"]
+    environment:
+      GEOSERVER_URL: http://geoserver:8080/geoserver
+      GEOSERVER_ADMIN_USER: admin
+      GEOSERVER_ADMIN_PASSWORD: geoserver
+      POSTGIS_HOST: postgis
+      POSTGIS_PORT: "5432"
+      POSTGIS_DB: geodata
+      POSTGIS_SCHEMA: integration
+      POSTGIS_USER: geoserver
+      POSTGIS_PASSWORD: geoserver
+      WFS_WORKSPACE: integration
+      WFS_DATASTORE: integration_pg
+      WFS_FEATURETYPE: world_cities
+      WFS_SRS: EPSG:4326

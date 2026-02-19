@@ -1,0 +1,6 @@
+<wfs:ListStoredQueriesResponse xmlns:wfs="http://www.opengis.net/wfs/2.0">
+  <wfs:StoredQuery id="urn:ogc:def:query:OGC-WFS::GetFeatureById">
+    <wfs:Title xml:lang="en">Get feature by id</wfs:Title>
+    <wfs:ReturnFeatureType>topp:roads</wfs:ReturnFeatureType>
+  </wfs:StoredQuery>
+</wfs:ListStoredQueriesResponse>

@@ -1,0 +1,12 @@
+<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:topp="http://www.openplans.org/topp" numberMatched="1" numberReturned="1" timeStamp="2026-02-19T00:00:00Z" lockId="lock-1">
+  <wfs:member>
+    <topp:roads gml:id="roads.1">
+      <topp:name>Main St</topp:name>
+      <topp:geometry>
+        <gml:Point srsName="EPSG:4326">
+          <gml:pos>40 20</gml:pos>
+        </gml:Point>
+      </topp:geometry>
+    </topp:roads>
+  </wfs:member>
+</wfs:FeatureCollection>

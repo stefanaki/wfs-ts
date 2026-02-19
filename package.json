@@ -1,0 +1,52 @@
+{
+  "name": "@stefanaki/wfs-ts",
+  "version": "0.1.0",
+  "description": "High-level TypeScript SDK for OGC WFS 2.0/1.1 services",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "namespaces",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist coverage .vitest",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "RUN_GEOSERVER_TESTS=1 vitest run test/integration",
+    "check": "npm run test && npm run schemas:validate && npm run types:validate",
+    "schemas:sync": "node scripts/sync-ogc-schemas.mjs",
+    "schemas:validate": "node scripts/validate-schemas.mjs",
+    "types:validate": "node scripts/validate-types-vs-xsd.mjs"
+  },
+  "peerDependencies": {
+    "axios": "^1.7.0"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.5.3"
+  },
+  "devDependencies": {
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^22.13.10",
+    "@vitest/ui": "3.2.4",
+    "axios": "^1.8.1",
+    "nock": "^14.0.1",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}

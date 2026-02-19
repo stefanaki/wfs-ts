@@ -1,0 +1,8 @@
+<wfs:LockFeatureResponse xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:fes="http://www.opengis.net/fes/2.0" lockId="lock-123">
+  <wfs:FeaturesLocked>
+    <fes:ResourceId rid="roads.1"/>
+  </wfs:FeaturesLocked>
+  <wfs:FeaturesNotLocked>
+    <fes:ResourceId rid="roads.2"/>
+  </wfs:FeaturesNotLocked>
+</wfs:LockFeatureResponse>

@@ -1,0 +1,5 @@
+<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" version="1.0.0">
+  <ows:Exception exceptionCode="InvalidParameterValue" locator="outputFormat">
+    <ows:ExceptionText>Unknown output format application/json</ows:ExceptionText>
+  </ows:Exception>
+</ows:ExceptionReport>

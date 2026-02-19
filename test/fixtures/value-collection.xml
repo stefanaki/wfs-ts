@@ -1,0 +1,8 @@
+<wfs:ValueCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" timeStamp="2026-02-19T00:00:00Z" numberMatched="2" numberReturned="2">
+  <wfs:member>
+    <value>Road A</value>
+  </wfs:member>
+  <wfs:member>
+    <value>Road B</value>
+  </wfs:member>
+</wfs:ValueCollection>

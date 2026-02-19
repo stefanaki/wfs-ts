@@ -1,0 +1,12 @@
+<wfs:TransactionResponse xmlns:wfs="http://www.opengis.net/wfs/2.0" version="2.0.2">
+  <wfs:TransactionSummary>
+    <wfs:totalInserted>1</wfs:totalInserted>
+    <wfs:totalUpdated>2</wfs:totalUpdated>
+    <wfs:totalDeleted>3</wfs:totalDeleted>
+  </wfs:TransactionSummary>
+  <wfs:InsertResults>
+    <wfs:Feature handle="ins-1">
+      <fes:ResourceId xmlns:fes="http://www.opengis.net/fes/2.0" rid="roads.10"/>
+    </wfs:Feature>
+  </wfs:InsertResults>
+</wfs:TransactionResponse>
