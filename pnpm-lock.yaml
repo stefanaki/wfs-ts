@@ -8,13 +8,13 @@ importers:
 
   .:
     dependencies:
+      '@types/geojson':
+        specifier: ^7946.0.16
+        version: 7946.0.16
       fast-xml-parser:
         specifier: ^4.5.3
         version: 4.5.3
     devDependencies:
-      '@types/geojson':
-        specifier: ^7946.0.16
-        version: 7946.0.16
       '@types/node':
         specifier: ^22.13.10
         version: 22.19.11
