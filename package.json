@@ -1,6 +1,6 @@
 {
   "name": "@stefanaki/wfs-ts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "High-level TypeScript SDK for OGC WFS 2.0/1.1 services",
   "license": "MIT",
   "type": "module",
