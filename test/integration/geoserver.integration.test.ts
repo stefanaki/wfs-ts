@@ -1,7 +1,15 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import type {
+  FeatureCollection,
+  GeoJsonProperties,
+  Geometry
+} from "geojson";
 import { WfsClient } from "../../src/client/WfsClient";
 import { OwsExceptionError } from "../../src/errors";
-import type { WfsVersion } from "../../src/types";
+import type {
+  TransactionResult,
+  WfsVersion
+} from "../../src/types";
 
 const run = process.env.RUN_GEOSERVER_TESTS === "1";
 const maybeDescribe = run ? describe : describe.skip;
@@ -138,6 +146,206 @@ async function expectOperationNotSupported(
   ).toBe(true);
 }
 
+function makeUniqueCityName(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+}
+
+async function eventually<T>(
+  operation: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  options?: {
+    attempts?: number;
+    delayMs?: number;
+  }
+): Promise<T> {
+  const attempts = options?.attempts ?? 20;
+  const delayMs = options?.delayMs ?? 500;
+  let lastValue: T | undefined;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const value = await operation();
+      lastValue = value;
+      if (predicate(value)) {
+        return value;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < attempts) {
+      await sleep(delayMs);
+    }
+  }
+
+  throw new Error(
+    `Condition was not met after ${attempts} attempts. Last value: ${formatForLog(
+      lastValue
+    )}. Last error: ${formatForLog(serializeError(lastError))}`
+  );
+}
+
+function toFeatureId(id: unknown): string | undefined {
+  if (typeof id === "string" || typeof id === "number") {
+    return String(id);
+  }
+
+  return undefined;
+}
+
+function readProperty(
+  properties: GeoJsonProperties | null | undefined,
+  propertyName: string
+): unknown {
+  if (!properties || typeof properties !== "object") {
+    return undefined;
+  }
+
+  if (propertyName in properties) {
+    return properties[propertyName];
+  }
+
+  const match = Object.entries(properties).find(
+    ([candidate]) =>
+      candidate === propertyName || candidate.endsWith(`:${propertyName}`)
+  );
+
+  return match?.[1];
+}
+
+function readStringProperty(
+  properties: GeoJsonProperties | null | undefined,
+  propertyName: string
+): string | undefined {
+  const value = readProperty(properties, propertyName);
+  return typeof value === "string" ? value : undefined;
+}
+
+function readNumberProperty(
+  properties: GeoJsonProperties | null | undefined,
+  propertyName: string
+): number | undefined {
+  const value = readProperty(properties, propertyName);
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
+function assertOwsFailure(error: unknown): OwsExceptionError {
+  expect(error).toBeInstanceOf(OwsExceptionError);
+  const owsError = error as OwsExceptionError;
+  expect(owsError.exceptions.length).toBeGreaterThan(0);
+  return owsError;
+}
+
+async function getFeaturesByName(
+  client: WfsClient,
+  version: WfsVersion,
+  name: string
+): Promise<FeatureCollection<Geometry, GeoJsonProperties>> {
+  return client.getFeature({
+    version,
+    requestStyle: "POST",
+    typeNames: [typeName],
+    filter: {
+      op: "eq",
+      property: "name",
+      value: name
+    }
+  });
+}
+
+async function deleteById(
+  client: WfsClient,
+  version: WfsVersion,
+  id: string
+): Promise<TransactionResult> {
+  return client.transaction({
+    version,
+    requestStyle: "POST",
+    actions: [
+      {
+        kind: "delete",
+        typeName,
+        filter: {
+          op: "id",
+          ids: [id]
+        }
+      }
+    ]
+  });
+}
+
+async function insertCityAndResolveId(
+  client: WfsClient,
+  version: WfsVersion,
+  name: string,
+  country: string,
+  population: number,
+  coordinates: [number, number]
+): Promise<{ featureId: string; transaction: TransactionResult }> {
+  const transaction = await client.transaction({
+    version,
+    requestStyle: "POST",
+    actions: [
+      {
+        kind: "insert",
+        typeName,
+        geometryPropertyName: "geom",
+        features: [
+          {
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates
+            },
+            properties: {
+              name,
+              country,
+              population
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  const featureId = transaction.insertResults
+    .flatMap((result) => result.resourceIds)
+    .map((id) => toFeatureId(id))
+    .find((id): id is string => !!id);
+
+  if (featureId) {
+    return {
+      featureId,
+      transaction
+    };
+  }
+
+  const byName = await eventually(
+    () => getFeaturesByName(client, version, name),
+    (fc) => fc.features.length > 0
+  );
+  const fallbackId = toFeatureId(byName.features[0]?.id);
+
+  if (!fallbackId) {
+    throw new Error(`Could not resolve inserted feature id for city "${name}"`);
+  }
+
+  return {
+    featureId: fallbackId,
+    transaction
+  };
+}
+
 maybeDescribe("GeoServer integration", () => {
   const client20 = createClient("2.0.2");
   const client11 = createClient("1.1.0");
@@ -258,6 +466,239 @@ maybeDescribe("GeoServer integration", () => {
       );
 
       expect(tx.totalUpdated ?? 0).toBeGreaterThanOrEqual(1);
+    });
+
+    describe("Transaction action matrix", () => {
+      it("insert action", async () => {
+        const cityName = makeUniqueCityName("tx20-insert");
+        let insertedId: string | undefined;
+
+        try {
+          const inserted = await runLogged(
+            "WFS 2.0.2 transaction matrix insert",
+            () =>
+              insertCityAndResolveId(
+                client20,
+                "2.0.2",
+                cityName,
+                "Testland",
+                100_001,
+                [11.111, 44.444]
+              )
+          );
+
+          insertedId = inserted.featureId;
+          expect(inserted.transaction.totalInserted ?? 0).toBeGreaterThanOrEqual(1);
+
+          const fetched = await runLogged(
+            "WFS 2.0.2 transaction matrix insert verify",
+            () =>
+              eventually(
+                () => getFeaturesByName(client20, "2.0.2", cityName),
+                (fc) => fc.features.length > 0
+              )
+          );
+
+          expect(fetched.features.length).toBeGreaterThanOrEqual(1);
+        } finally {
+          const cleanupId = insertedId;
+          if (cleanupId) {
+            await runLogged("WFS 2.0.2 transaction matrix insert cleanup", () =>
+              deleteById(client20, "2.0.2", cleanupId)
+            );
+          }
+        }
+      });
+
+      it("update action with comparison filter", async () => {
+        const cityName = makeUniqueCityName("tx20-update");
+        const nextPopulation = 510_000 + (Date.now() % 1000);
+        let insertedId: string | undefined;
+
+        try {
+          const inserted = await runLogged(
+            "WFS 2.0.2 transaction matrix update setup insert",
+            () =>
+              insertCityAndResolveId(
+                client20,
+                "2.0.2",
+                cityName,
+                "Testland",
+                101_001,
+                [11.112, 44.445]
+              )
+          );
+          insertedId = inserted.featureId;
+
+          const updated = await runLogged(
+            "WFS 2.0.2 transaction matrix update",
+            () =>
+              client20.transaction({
+                version: "2.0.2",
+                requestStyle: "POST",
+                actions: [
+                  {
+                    kind: "update",
+                    typeName,
+                    properties: [
+                      {
+                        name: "population",
+                        value: nextPopulation
+                      }
+                    ],
+                    filter: {
+                      op: "eq",
+                      property: "name",
+                      value: cityName
+                    }
+                  }
+                ]
+              })
+          );
+
+          expect(updated.totalUpdated ?? 0).toBeGreaterThanOrEqual(1);
+
+          const fetched = await runLogged(
+            "WFS 2.0.2 transaction matrix update verify",
+            () =>
+              eventually(
+                () => getFeaturesByName(client20, "2.0.2", cityName),
+                (fc) =>
+                  fc.features.some(
+                    (feature) =>
+                      readNumberProperty(feature.properties, "population") ===
+                      nextPopulation
+                  )
+              )
+          );
+
+          const populations = fetched.features
+            .map((feature) => readNumberProperty(feature.properties, "population"))
+            .filter((value): value is number => value !== undefined);
+          expect(populations).toContain(nextPopulation);
+        } finally {
+          const cleanupId = insertedId;
+          if (cleanupId) {
+            await runLogged("WFS 2.0.2 transaction matrix update cleanup", () =>
+              deleteById(client20, "2.0.2", cleanupId)
+            );
+          }
+        }
+      });
+
+      it("delete action with comparison filter", async () => {
+        const cityName = makeUniqueCityName("tx20-delete");
+        let insertedId: string | undefined;
+
+        try {
+          const inserted = await runLogged(
+            "WFS 2.0.2 transaction matrix delete setup insert",
+            () =>
+              insertCityAndResolveId(
+                client20,
+                "2.0.2",
+                cityName,
+                "Testland",
+                102_001,
+                [11.113, 44.446]
+              )
+          );
+          insertedId = inserted.featureId;
+
+          const deleted = await runLogged(
+            "WFS 2.0.2 transaction matrix delete",
+            () =>
+              client20.transaction({
+                version: "2.0.2",
+                requestStyle: "POST",
+                actions: [
+                  {
+                    kind: "delete",
+                    typeName,
+                    filter: {
+                      op: "eq",
+                      property: "name",
+                      value: cityName
+                    }
+                  }
+                ]
+              })
+          );
+
+          expect(deleted.totalDeleted ?? 0).toBeGreaterThanOrEqual(1);
+
+          const remaining = await runLogged(
+            "WFS 2.0.2 transaction matrix delete verify",
+            () =>
+              eventually(
+                () => getFeaturesByName(client20, "2.0.2", cityName),
+                (fc) => fc.features.length === 0
+              )
+          );
+
+          expect(remaining.features.length).toBe(0);
+        } finally {
+          const cleanupId = insertedId;
+          if (cleanupId) {
+            await runLogged("WFS 2.0.2 transaction matrix delete cleanup", () =>
+              deleteById(client20, "2.0.2", cleanupId)
+            );
+          }
+        }
+      }, 15_000);
+
+      it("native action succeeds when safeToIgnore=true", async () => {
+        const tx = await runLogged(
+          "WFS 2.0.2 transaction matrix native safe",
+          () =>
+            client20.transaction({
+              version: "2.0.2",
+              requestStyle: "POST",
+              actions: [
+                {
+                  kind: "native",
+                  vendorId: "codex-unknown-vendor",
+                  safeToIgnore: true,
+                  value: "noop"
+                }
+              ]
+            })
+        );
+
+        expect(tx).toBeDefined();
+      });
+
+      it("native action fails when safeToIgnore=false", async () => {
+        let thrown: unknown;
+
+        try {
+          await runLogged("WFS 2.0.2 transaction matrix native strict", () =>
+            client20.transaction({
+              version: "2.0.2",
+              requestStyle: "POST",
+              actions: [
+                {
+                  kind: "native",
+                  vendorId: "codex-unknown-vendor",
+                  safeToIgnore: false,
+                  value: "noop"
+                }
+              ]
+            })
+          );
+        } catch (error) {
+          thrown = error;
+        }
+
+        const owsError = assertOwsFailure(thrown);
+        expect(
+          owsError.exceptions.some(
+            (exception) =>
+              (exception.exceptionCode ?? "").length > 0 ||
+              exception.text.length > 0
+          )
+        ).toBe(true);
+      });
     });
 
     it("listStoredQueries", async () => {
@@ -479,6 +920,239 @@ maybeDescribe("GeoServer integration", () => {
       expect(tx.totalUpdated ?? 0).toBeGreaterThanOrEqual(1);
     });
 
+    describe("Transaction action matrix", () => {
+      it("insert action", async () => {
+        const cityName = makeUniqueCityName("tx11-insert");
+        let insertedId: string | undefined;
+
+        try {
+          const inserted = await runLogged(
+            "WFS 1.1.0 transaction matrix insert",
+            () =>
+              insertCityAndResolveId(
+                client11,
+                "1.1.0",
+                cityName,
+                "Testland",
+                200_001,
+                [12.111, 43.444]
+              )
+          );
+
+          insertedId = inserted.featureId;
+          expect(inserted.transaction.totalInserted ?? 0).toBeGreaterThanOrEqual(1);
+
+          const fetched = await runLogged(
+            "WFS 1.1.0 transaction matrix insert verify",
+            () =>
+              eventually(
+                () => getFeaturesByName(client11, "1.1.0", cityName),
+                (fc) => fc.features.length > 0
+              )
+          );
+
+          expect(fetched.features.length).toBeGreaterThanOrEqual(1);
+        } finally {
+          const cleanupId = insertedId;
+          if (cleanupId) {
+            await runLogged("WFS 1.1.0 transaction matrix insert cleanup", () =>
+              deleteById(client11, "1.1.0", cleanupId)
+            );
+          }
+        }
+      });
+
+      it("update action with comparison filter", async () => {
+        const cityName = makeUniqueCityName("tx11-update");
+        const nextPopulation = 610_000 + (Date.now() % 1000);
+        let insertedId: string | undefined;
+
+        try {
+          const inserted = await runLogged(
+            "WFS 1.1.0 transaction matrix update setup insert",
+            () =>
+              insertCityAndResolveId(
+                client11,
+                "1.1.0",
+                cityName,
+                "Testland",
+                201_001,
+                [12.112, 43.445]
+              )
+          );
+          insertedId = inserted.featureId;
+
+          const updated = await runLogged(
+            "WFS 1.1.0 transaction matrix update",
+            () =>
+              client11.transaction({
+                version: "1.1.0",
+                requestStyle: "POST",
+                actions: [
+                  {
+                    kind: "update",
+                    typeName,
+                    properties: [
+                      {
+                        name: "population",
+                        value: nextPopulation
+                      }
+                    ],
+                    filter: {
+                      op: "eq",
+                      property: "name",
+                      value: cityName
+                    }
+                  }
+                ]
+              })
+          );
+
+          expect(updated.totalUpdated ?? 0).toBeGreaterThanOrEqual(1);
+
+          const fetched = await runLogged(
+            "WFS 1.1.0 transaction matrix update verify",
+            () =>
+              eventually(
+                () => getFeaturesByName(client11, "1.1.0", cityName),
+                (fc) =>
+                  fc.features.some(
+                    (feature) =>
+                      readNumberProperty(feature.properties, "population") ===
+                      nextPopulation
+                  )
+              )
+          );
+
+          const populations = fetched.features
+            .map((feature) => readNumberProperty(feature.properties, "population"))
+            .filter((value): value is number => value !== undefined);
+          expect(populations).toContain(nextPopulation);
+        } finally {
+          const cleanupId = insertedId;
+          if (cleanupId) {
+            await runLogged("WFS 1.1.0 transaction matrix update cleanup", () =>
+              deleteById(client11, "1.1.0", cleanupId)
+            );
+          }
+        }
+      });
+
+      it("delete action with comparison filter", async () => {
+        const cityName = makeUniqueCityName("tx11-delete");
+        let insertedId: string | undefined;
+
+        try {
+          const inserted = await runLogged(
+            "WFS 1.1.0 transaction matrix delete setup insert",
+            () =>
+              insertCityAndResolveId(
+                client11,
+                "1.1.0",
+                cityName,
+                "Testland",
+                202_001,
+                [12.113, 43.446]
+              )
+          );
+          insertedId = inserted.featureId;
+
+          const deleted = await runLogged(
+            "WFS 1.1.0 transaction matrix delete",
+            () =>
+              client11.transaction({
+                version: "1.1.0",
+                requestStyle: "POST",
+                actions: [
+                  {
+                    kind: "delete",
+                    typeName,
+                    filter: {
+                      op: "eq",
+                      property: "name",
+                      value: cityName
+                    }
+                  }
+                ]
+              })
+          );
+
+          expect(deleted.totalDeleted ?? 0).toBeGreaterThanOrEqual(1);
+
+          const remaining = await runLogged(
+            "WFS 1.1.0 transaction matrix delete verify",
+            () =>
+              eventually(
+                () => getFeaturesByName(client11, "1.1.0", cityName),
+                (fc) => fc.features.length === 0
+              )
+          );
+
+          expect(remaining.features.length).toBe(0);
+        } finally {
+          const cleanupId = insertedId;
+          if (cleanupId) {
+            await runLogged("WFS 1.1.0 transaction matrix delete cleanup", () =>
+              deleteById(client11, "1.1.0", cleanupId)
+            );
+          }
+        }
+      }, 15_000);
+
+      it("native action succeeds when safeToIgnore=true", async () => {
+        const tx = await runLogged(
+          "WFS 1.1.0 transaction matrix native safe",
+          () =>
+            client11.transaction({
+              version: "1.1.0",
+              requestStyle: "POST",
+              actions: [
+                {
+                  kind: "native",
+                  vendorId: "codex-unknown-vendor",
+                  safeToIgnore: true,
+                  value: "noop"
+                }
+              ]
+            })
+        );
+
+        expect(tx).toBeDefined();
+      });
+
+      it("native action fails when safeToIgnore=false", async () => {
+        let thrown: unknown;
+
+        try {
+          await runLogged("WFS 1.1.0 transaction matrix native strict", () =>
+            client11.transaction({
+              version: "1.1.0",
+              requestStyle: "POST",
+              actions: [
+                {
+                  kind: "native",
+                  vendorId: "codex-unknown-vendor",
+                  safeToIgnore: false,
+                  value: "noop"
+                }
+              ]
+            })
+          );
+        } catch (error) {
+          thrown = error;
+        }
+
+        const owsError = assertOwsFailure(thrown);
+        expect(
+          owsError.exceptions.some(
+            (exception) =>
+              (exception.exceptionCode ?? "").length > 0 ||
+              exception.text.length > 0
+          )
+        ).toBe(true);
+      });
+    });
+
     it("getFeatureWithLock", async () => {
       const targetId = pickFeatureId(0);
       const result = await runLogged("WFS 1.1.0 getFeatureWithLock", () =>
@@ -567,6 +1241,241 @@ maybeDescribe("GeoServer integration", () => {
           id: "urn:example:storedquery:not-supported"
         })
       );
+    });
+  });
+
+  describe("Filter coverage", () => {
+    it("cql_filter narrows query results", async () => {
+      const includeName = makeUniqueCityName("cql-include");
+      const excludeName = makeUniqueCityName("cql-exclude");
+      let includeId: string | undefined;
+      let excludeId: string | undefined;
+
+      try {
+        const insertedInclude = await runLogged(
+          "Filter coverage cql setup include",
+          () =>
+            insertCityAndResolveId(
+              client20,
+              "2.0.2",
+              includeName,
+              "Filterland",
+              301_001,
+              [20.101, 45.101]
+            )
+        );
+        includeId = insertedInclude.featureId;
+
+        const insertedExclude = await runLogged(
+          "Filter coverage cql setup exclude",
+          () =>
+            insertCityAndResolveId(
+              client20,
+              "2.0.2",
+              excludeName,
+              "Otherland",
+              302_001,
+              [20.102, 45.102]
+            )
+        );
+        excludeId = insertedExclude.featureId;
+
+        const fc = await runLogged("Filter coverage cql_filter", () =>
+          client20.getFeature({
+            version: "2.0.2",
+            requestStyle: "GET",
+            typeNames: [typeName],
+            geoserver: {
+              cqlFilter: `name = '${includeName}'`
+            }
+          })
+        );
+
+        const names = fc.features
+          .map((feature) => readStringProperty(feature.properties, "name"))
+          .filter((name): name is string => !!name);
+
+        expect(names.length).toBeGreaterThan(0);
+        expect(names).toContain(includeName);
+        expect(names).not.toContain(excludeName);
+      } finally {
+        const cleanupIds = [includeId, excludeId].filter(
+          (id): id is string => !!id
+        );
+        for (const cleanupId of cleanupIds) {
+          await runLogged("Filter coverage cql cleanup", () =>
+            deleteById(client20, "2.0.2", cleanupId)
+          );
+        }
+      }
+    });
+
+    it("fes 2.0 filter works on WFS 2.0.2", async () => {
+      const includeName = makeUniqueCityName("fes20-include-a");
+      const excludeName = makeUniqueCityName("fes20-exclude-b");
+      let includeId: string | undefined;
+      let excludeId: string | undefined;
+
+      try {
+        const insertedInclude = await runLogged(
+          "Filter coverage fes 2.0 setup include",
+          () =>
+            insertCityAndResolveId(
+              client20,
+              "2.0.2",
+              includeName,
+              "Dialectland",
+              401_001,
+              [21.101, 46.101]
+            )
+        );
+        includeId = insertedInclude.featureId;
+
+        const insertedExclude = await runLogged(
+          "Filter coverage fes 2.0 setup exclude",
+          () =>
+            insertCityAndResolveId(
+              client20,
+              "2.0.2",
+              excludeName,
+              "Dialectland",
+              402_001,
+              [21.102, 46.102]
+            )
+        );
+        excludeId = insertedExclude.featureId;
+
+        const fc = await runLogged("Filter coverage fes 2.0", () =>
+          client20.getFeature({
+            version: "2.0.2",
+            requestStyle: "POST",
+            typeNames: [typeName],
+            filter: {
+              op: "and",
+              filters: [
+                {
+                  op: "eq",
+                  property: "country",
+                  value: "Dialectland"
+                },
+                {
+                  op: "like",
+                  property: "name",
+                  value: "fes20-include-*"
+                }
+              ]
+            }
+          })
+        );
+
+        const names = fc.features
+          .map((feature) => readStringProperty(feature.properties, "name"))
+          .filter((name): name is string => !!name);
+
+        expect(names.length).toBeGreaterThan(0);
+        expect(names).toContain(includeName);
+        expect(names).not.toContain(excludeName);
+
+        for (const feature of fc.features) {
+          expect(readStringProperty(feature.properties, "country")).toBe("Dialectland");
+          expect(
+            readStringProperty(feature.properties, "name")?.startsWith("fes20-include-")
+          ).toBe(true);
+        }
+      } finally {
+        const cleanupIds = [includeId, excludeId].filter(
+          (id): id is string => !!id
+        );
+        for (const cleanupId of cleanupIds) {
+          await runLogged("Filter coverage fes 2.0 cleanup", () =>
+            deleteById(client20, "2.0.2", cleanupId)
+          );
+        }
+      }
+    });
+
+    it("ogc filter 1.1 works on WFS 1.1.0", async () => {
+      const includeName = makeUniqueCityName("ogc11-include-a");
+      const excludeName = makeUniqueCityName("ogc11-exclude-b");
+      let includeId: string | undefined;
+      let excludeId: string | undefined;
+
+      try {
+        const insertedInclude = await runLogged(
+          "Filter coverage ogc 1.1 setup include",
+          () =>
+            insertCityAndResolveId(
+              client11,
+              "1.1.0",
+              includeName,
+              "Dialectland11",
+              501_001,
+              [22.101, 47.101]
+            )
+        );
+        includeId = insertedInclude.featureId;
+
+        const insertedExclude = await runLogged(
+          "Filter coverage ogc 1.1 setup exclude",
+          () =>
+            insertCityAndResolveId(
+              client11,
+              "1.1.0",
+              excludeName,
+              "Dialectland11",
+              502_001,
+              [22.102, 47.102]
+            )
+        );
+        excludeId = insertedExclude.featureId;
+
+        const fc = await runLogged("Filter coverage ogc 1.1", () =>
+          client11.getFeature({
+            version: "1.1.0",
+            requestStyle: "POST",
+            typeNames: [typeName],
+            filter: {
+              op: "and",
+              filters: [
+                {
+                  op: "eq",
+                  property: "country",
+                  value: "Dialectland11"
+                },
+                {
+                  op: "like",
+                  property: "name",
+                  value: "ogc11-include-*"
+                }
+              ]
+            }
+          })
+        );
+
+        const names = fc.features
+          .map((feature) => readStringProperty(feature.properties, "name"))
+          .filter((name): name is string => !!name);
+
+        expect(names.length).toBeGreaterThan(0);
+        expect(names).toContain(includeName);
+        expect(names).not.toContain(excludeName);
+
+        for (const feature of fc.features) {
+          expect(readStringProperty(feature.properties, "country")).toBe("Dialectland11");
+          expect(
+            readStringProperty(feature.properties, "name")?.startsWith("ogc11-include-")
+          ).toBe(true);
+        }
+      } finally {
+        const cleanupIds = [includeId, excludeId].filter(
+          (id): id is string => !!id
+        );
+        for (const cleanupId of cleanupIds) {
+          await runLogged("Filter coverage ogc 1.1 cleanup", () =>
+            deleteById(client11, "1.1.0", cleanupId)
+          );
+        }
+      }
     });
   });
 });
