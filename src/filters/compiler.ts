@@ -16,6 +16,7 @@ import { geometryToGml, literalToXml, qNameValueReference } from "../serializers
 interface CompileFilterOptions {
   version: WfsVersion;
   srsName?: string;
+  includeNamespaceDeclarations?: boolean;
 }
 
 const COMPARISON_TAG_MAP: Record<ComparisonFilter["op"], string> = {
@@ -43,7 +44,21 @@ export function compileFilterXml(
   options: CompileFilterOptions
 ): string {
   const prefix = options.version === "1.1.0" ? "ogc" : "fes";
-  return `<${prefix}:Filter>${compileFilterBody(filter, options)}</${prefix}:Filter>`;
+  const nsAttrs = options.includeNamespaceDeclarations
+    ? filterNamespaceAttrs(options.version)
+    : "";
+  return `<${prefix}:Filter${nsAttrs}>${compileFilterBody(
+    filter,
+    options
+  )}</${prefix}:Filter>`;
+}
+
+function filterNamespaceAttrs(version: WfsVersion): string {
+  if (version === "1.1.0") {
+    return ' xmlns:ogc="http://www.opengis.net/ogc" xmlns:gml="http://www.opengis.net/gml"';
+  }
+
+  return ' xmlns:fes="http://www.opengis.net/fes/2.0" xmlns:gml="http://www.opengis.net/gml/3.2"';
 }
 
 function compileFilterBody(filter: WfsFilter, options: CompileFilterOptions): string {

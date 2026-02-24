@@ -191,7 +191,8 @@ function buildGetFilter(filter: unknown, version: WfsVersion): string | undefine
   }
 
   return compileFilterXml(filter as never, {
-    version
+    version,
+    includeNamespaceDeclarations: true
   });
 }
 
